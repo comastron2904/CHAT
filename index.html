@@ -45,6 +45,11 @@ dialog::backdrop{background:rgba(24,33,47,.5)}
 dialog h2{margin:0 0 14px;font-size:17px}
 dialog input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;margin-bottom:12px}
 dialog button{width:100%}
+.me .bubble{-webkit-touch-callout:none}
+.ctx{position:fixed;z-index:10;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(24,33,47,.18);padding:4px}
+.ctx[hidden]{display:none}
+.ctx button{border:0;height:36px;width:100%;text-align:left;color:var(--unread)}
+.ctx button:hover{background:var(--bg)}
 @media(max-width:520px){#emojis{grid-template-columns:repeat(8,1fr)}.col{max-width:78%}}
 @media(prefers-reduced-motion:no-preference){#list{scroll-behavior:smooth}}
 </style>
@@ -62,6 +67,8 @@ dialog button{width:100%}
     <button class="send" type="submit">보내기</button>
   </form>
 </div>
+
+<div id="ctx" class="ctx" hidden><button type="button" id="del">🗑 삭제</button></div>
 
 <dialog id="dlg">
   <h2>이름을 입력하세요</h2>
@@ -125,6 +132,12 @@ function addMsg(m) {
     }
   } else b.textContent = m.content;
   col.append(b);
+  if (mine) {
+    b.addEventListener('contextmenu', e => { e.preventDefault(); openCtx(e.clientX, e.clientY, m.id); });
+    let t; // 모바일 길게 누르기
+    b.addEventListener('touchstart', e => { const p = e.touches[0]; t = setTimeout(() => openCtx(p.clientX, p.clientY, m.id), 500); }, {passive: true});
+    ['touchend', 'touchmove', 'touchcancel'].forEach(ev => b.addEventListener(ev, () => clearTimeout(t), {passive: true}));
+  }
   const side = document.createElement('div'); side.className = 'side';
   const cnt = document.createElement('span'); cnt.className = 'cnt';
   const tm = document.createElement('span'); tm.textContent = fmtTime(m.created_at);
@@ -132,6 +145,26 @@ function addMsg(m) {
   if (mine) row.append(side, col); else row.append(col, side);
   $('list').append(row); els.set(m.id, row);
   paintBadge(m); toBottom();
+}
+let ctxId = null;
+function openCtx(x, y, id) {
+  ctxId = id; const c = $('ctx'); c.hidden = false;
+  c.style.left = Math.min(x, innerWidth - 110) + 'px'; c.style.top = Math.min(y, innerHeight - 50) + 'px';
+}
+function closeCtx() { $('ctx').hidden = true; }
+function removeMsg(id) {
+  const el = els.get(id); if (el) el.remove();
+  els.delete(id); msgs.delete(id); delete reads[id];
+}
+async function delMsg() {
+  const m = msgs.get(ctxId); closeCtx(); if (!m || m.sender_id !== me.id) return;
+  const {error} = await sb.from('messages').delete().eq('id', m.id);
+  if (error) return alert('삭제 실패: ' + error.message);
+  removeMsg(m.id);
+  if (m.kind === 'file' && m.file_url) {
+    const i = m.file_url.indexOf('/' + BUCKET + '/');
+    if (i >= 0) sb.storage.from(BUCKET).remove([decodeURIComponent(m.file_url.slice(i + BUCKET.length + 2))]);
+  }
 }
 function toBottom() { const l = $('list'); l.scrollTop = l.scrollHeight; }
 
@@ -178,6 +211,7 @@ async function start() {
 
   const ch = sb.channel('room-' + ROOM, {config: {presence: {key: me.id}}});
   ch.on('postgres_changes', {event: 'INSERT', schema: 'public', table: 'messages', filter: `room=eq.${ROOM}`}, p => { addMsg(p.new); markRead(); })
+    .on('postgres_changes', {event: 'DELETE', schema: 'public', table: 'messages'}, p => removeMsg(p.old.id))
     .on('postgres_changes', {event: 'INSERT', schema: 'public', table: 'reads'}, p => {
       (reads[p.new.message_id] ||= new Set()).add(p.new.reader_id);
       const m = msgs.get(p.new.message_id); if (m) paintBadge(m);
@@ -202,6 +236,10 @@ EMOJIS.forEach(em => {
   const b = document.createElement('button'); b.type = 'button'; b.textContent = em; b.setAttribute('aria-label', em + ' 보내기');
   b.onclick = () => send({kind: 'emoji', content: em}); $('emojis').append(b);
 });
+$('del').onclick = delMsg;
+document.addEventListener('click', closeCtx);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCtx(); });
+$('list').addEventListener('scroll', closeCtx);
 document.addEventListener('visibilitychange', markRead);
 window.addEventListener('focus', markRead);
 
