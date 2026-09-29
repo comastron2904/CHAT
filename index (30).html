@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>실시간 채팅</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+<style>
+:root{--bg:#e9edf2;--panel:#fff;--ink:#18212f;--sub:#6a7688;--me:#2b4fd8;--line:#d8dfe8;--unread:#e0533d}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;background:var(--bg);color:var(--ink);display:flex;justify-content:center}
+.app{width:100%;max-width:860px;height:100%;display:flex;flex-direction:column;background:var(--panel);border-inline:1px solid var(--line)}
+header{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+header h1{font-size:17px;margin:0;font-weight:600}
+header span{font-size:13px;color:var(--sub)}
+#list{flex:1;overflow-y:auto;padding:16px 14px;background:var(--bg);display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:flex-end;gap:6px;max-width:100%}
+.row.me{justify-content:flex-end}
+.col{display:flex;flex-direction:column;gap:3px;max-width:72%}
+.name{font-size:12px;color:var(--sub);padding-left:4px}
+.bubble{padding:9px 13px;border-radius:14px;line-height:1.5;word-break:break-word;white-space:pre-wrap;font-size:15px}
+.other .bubble{background:#fff;border:1px solid var(--line);border-top-left-radius:4px}
+.me .bubble{background:var(--me);color:#fff;border-top-right-radius:4px}
+.bubble.emoji{background:none!important;border:0!important;font-size:44px;line-height:1.1;padding:0}
+.bubble img{max-width:100%;max-height:260px;border-radius:8px;display:block}
+.file{display:flex;gap:8px;align-items:center;color:inherit;text-decoration:none}
+.file b{font-weight:500;text-decoration:underline;word-break:break-all}
+.file small{opacity:.75;white-space:nowrap}
+.side{display:flex;flex-direction:column;font-size:11px;color:var(--sub);gap:1px;flex-shrink:0}
+.me .side{align-items:flex-end}
+.cnt{color:var(--unread);font-weight:600}
+.cnt.done{color:var(--sub);font-weight:400}
+form{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line);align-items:flex-end;background:var(--panel)}
+textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:inherit;font-size:15px;max-height:120px;min-height:42px}
+button{font:inherit;border:1px solid var(--line);background:#fff;border-radius:10px;height:42px;min-width:42px;padding:0 12px;cursor:pointer;color:var(--ink)}
+button.send{background:var(--me);border-color:var(--me);color:#fff;font-weight:500}
+button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--me);outline-offset:1px}
+#emojis{display:none;grid-template-columns:repeat(10,1fr);gap:2px;padding:8px 12px;border-top:1px solid var(--line);background:var(--panel)}
+#emojis.open{display:grid}
+#emojis button{border:0;height:38px;font-size:22px;padding:0}
+#emojis button:hover{background:var(--bg)}
+dialog{border:0;border-radius:14px;padding:24px;width:min(340px,90vw)}
+dialog::backdrop{background:rgba(24,33,47,.5)}
+dialog h2{margin:0 0 14px;font-size:17px}
+dialog input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;margin-bottom:12px}
+dialog button{width:100%}
+@media(max-width:520px){#emojis{grid-template-columns:repeat(8,1fr)}.col{max-width:78%}}
+@media(prefers-reduced-motion:no-preference){#list{scroll-behavior:smooth}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>실시간 채팅</h1><span id="stat">연결 중…</span></header>
+  <div id="list"></div>
+  <div id="emojis"></div>
+  <form id="f">
+    <button type="button" id="eb" aria-label="이모지 열기">😊</button>
+    <button type="button" id="fb" aria-label="파일 첨부">📎</button>
+    <input type="file" id="file" hidden>
+    <textarea id="t" rows="1" placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+    <button class="send" type="submit">보내기</button>
+  </form>
+</div>
+
+<dialog id="dlg">
+  <h2>이름을 입력하세요</h2>
+  <input id="nick" maxlength="12" placeholder="채팅에서 표시될 이름">
+  <button class="send" id="join" type="button">입장하기</button>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+// ▼ Supabase 프로젝트 값으로 교체하세요
+const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
+const SUPABASE_KEY = 'YOUR-ANON-KEY';
+const ROOM = 'main';
+const BUCKET = 'chat-files';
+const MAX_MB = 20;
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const $ = id => document.getElementById(id);
+const EMOJIS = Array.from('😀😂🤣😊😍😘😎🤔😅😭😡👍👎👏🙏💪🎉🔥❤️💯✅❌👀🙌😴🤝😱🥳😢🤗🍀⭐🎁📌📚✏️🏫☕🍕🎵');
+
+let me = null, members = [], online = 0;
+const msgs = new Map();      // id -> message
+const els = new Map();       // id -> element
+const reads = {};            // messageId -> Set(readerId)
+
+const fmtTime = s => new Date(s).toLocaleTimeString('ko-KR', {hour: 'numeric', minute: '2-digit'});
+const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB';
+
+function unreadOf(m) {
+  const r = reads[m.id];
+  return members.filter(x => x.id !== m.sender_id && new Date(x.joined_at) <= new Date(m.created_at) && !(r && r.has(x.id))).length;
+}
+function paintBadge(m) {
+  const el = els.get(m.id); if (!el || m.sender_id !== me.id) return;
+  const c = el.querySelector('.cnt'), n = unreadOf(m);
+  c.textContent = n > 0 ? n : '';
+  c.classList.toggle('done', false);
+}
+function updateBadges() { msgs.forEach(paintBadge); }
+function head() { $('stat').textContent = `접속 ${online}명 · 참여 ${members.length}명`; }
+
+function addMsg(m) {
+  if (msgs.has(m.id)) return;
+  msgs.set(m.id, m);
+  const mine = m.sender_id === me.id;
+  const row = document.createElement('div');
+  row.className = 'row ' + (mine ? 'me' : 'other');
+  const col = document.createElement('div'); col.className = 'col';
+  if (!mine) { const n = document.createElement('div'); n.className = 'name'; n.textContent = m.sender_name; col.append(n); }
+  const b = document.createElement('div'); b.className = 'bubble';
+  if (m.kind === 'emoji') { b.classList.add('emoji'); b.textContent = m.content; }
+  else if (m.kind === 'file') {
+    if (/\.(png|jpe?g|gif|webp)$/i.test(m.file_name || '')) {
+      const a = document.createElement('a'); a.href = m.file_url; a.target = '_blank'; a.rel = 'noopener';
+      const i = document.createElement('img'); i.src = m.file_url; i.alt = m.file_name; i.onload = toBottom; a.append(i); b.append(a);
+    } else {
+      const a = document.createElement('a'); a.className = 'file'; a.href = m.file_url; a.target = '_blank'; a.rel = 'noopener'; a.download = m.file_name;
+      a.innerHTML = '<span>📄</span><b></b><small></small>';
+      a.querySelector('b').textContent = m.file_name; a.querySelector('small').textContent = fmtSize(m.file_size || 0);
+      b.append(a);
+    }
+  } else b.textContent = m.content;
+  col.append(b);
+  const side = document.createElement('div'); side.className = 'side';
+  const cnt = document.createElement('span'); cnt.className = 'cnt';
+  const tm = document.createElement('span'); tm.textContent = fmtTime(m.created_at);
+  if (mine) side.append(cnt); side.append(tm);
+  if (mine) row.append(side, col); else row.append(col, side);
+  $('list').append(row); els.set(m.id, row);
+  paintBadge(m); toBottom();
+}
+function toBottom() { const l = $('list'); l.scrollTop = l.scrollHeight; }
+
+async function markRead() {
+  if (document.visibilityState !== 'visible' || !me) return;
+  const rows = [];
+  msgs.forEach(m => {
+    if (m.sender_id === me.id) return;
+    const s = reads[m.id] || (reads[m.id] = new Set());
+    if (!s.has(me.id)) { s.add(me.id); rows.push({message_id: m.id, reader_id: me.id}); }
+  });
+  if (rows.length) await sb.from('reads').upsert(rows, {onConflict: 'message_id,reader_id', ignoreDuplicates: true});
+}
+
+async function send(fields) {
+  const {error} = await sb.from('messages').insert({room: ROOM, sender_id: me.id, sender_name: me.name, ...fields});
+  if (error) alert('전송 실패: ' + error.message);
+}
+async function sendText() {
+  const v = $('t').value.trim(); if (!v) return;
+  $('t').value = ''; $('t').style.height = 'auto';
+  await send({kind: 'text', content: v});
+}
+async function sendFile(file) {
+  if (file.size > MAX_MB * 1048576) return alert(`파일은 ${MAX_MB}MB 이하만 보낼 수 있어요.`);
+  const ext = (file.name.match(/\.[A-Za-z0-9]+$/) || [''])[0];
+  const path = `${ROOM}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const up = await sb.storage.from(BUCKET).upload(path, file);
+  if (up.error) return alert('업로드 실패: ' + up.error.message);
+  const url = sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+  await send({kind: 'file', file_url: url, file_name: file.name, file_size: file.size});
+}
+
+async function start() {
+  $('stat').textContent = '불러오는 중…';
+  await sb.from('members').upsert({id: me.id, room: ROOM, name: me.name});
+  members = (await sb.from('members').select('*').eq('room', ROOM)).data || [];
+  const old = ((await sb.from('messages').select('*').eq('room', ROOM).order('created_at', {ascending: false}).limit(200)).data || []).reverse();
+  if (old.length) {
+    const rd = (await sb.from('reads').select('*').in('message_id', old.map(m => m.id))).data || [];
+    rd.forEach(r => (reads[r.message_id] ||= new Set()).add(r.reader_id));
+  }
+  old.forEach(addMsg); head(); markRead();
+
+  const ch = sb.channel('room-' + ROOM, {config: {presence: {key: me.id}}});
+  ch.on('postgres_changes', {event: 'INSERT', schema: 'public', table: 'messages', filter: `room=eq.${ROOM}`}, p => { addMsg(p.new); markRead(); })
+    .on('postgres_changes', {event: 'INSERT', schema: 'public', table: 'reads'}, p => {
+      (reads[p.new.message_id] ||= new Set()).add(p.new.reader_id);
+      const m = msgs.get(p.new.message_id); if (m) paintBadge(m);
+    })
+    .on('postgres_changes', {event: '*', schema: 'public', table: 'members', filter: `room=eq.${ROOM}`}, p => {
+      const i = members.findIndex(x => x.id === p.new.id);
+      if (i >= 0) members[i] = p.new; else members.push(p.new);
+      updateBadges(); head();
+    })
+    .on('presence', {event: 'sync'}, () => { online = Object.keys(ch.presenceState()).length; head(); })
+    .subscribe(s => { if (s === 'SUBSCRIBED') ch.track({id: me.id}); });
+}
+
+// 이벤트
+$('f').addEventListener('submit', e => { e.preventDefault(); sendText(); });
+$('t').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendText(); } });
+$('t').addEventListener('input', e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; });
+$('eb').onclick = () => $('emojis').classList.toggle('open');
+$('fb').onclick = () => $('file').click();
+$('file').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (f) await sendFile(f); };
+EMOJIS.forEach(em => {
+  const b = document.createElement('button'); b.type = 'button'; b.textContent = em; b.setAttribute('aria-label', em + ' 보내기');
+  b.onclick = () => send({kind: 'emoji', content: em}); $('emojis').append(b);
+});
+document.addEventListener('visibilitychange', markRead);
+window.addEventListener('focus', markRead);
+
+// 입장
+try { me = JSON.parse(localStorage.getItem('chat-me') || 'null'); } catch (e) {}
+if (me) start();
+else {
+  const dlg = $('dlg'); dlg.showModal();
+  const go = () => {
+    const name = $('nick').value.trim(); if (!name) return $('nick').focus();
+    me = {id: crypto.randomUUID(), name};
+    try { localStorage.setItem('chat-me', JSON.stringify(me)); } catch (e) {}
+    dlg.close(); start();
+  };
+  $('join').onclick = go;
+  $('nick').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) go(); });
+  dlg.addEventListener('cancel', e => e.preventDefault());
+}
+</script>
+</body>
+</html>
